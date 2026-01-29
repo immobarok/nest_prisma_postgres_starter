@@ -1,0 +1,31 @@
+
+datasource db {
+  provider = "postgresql"
+}
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+  moduleFormat  = "cjs"
+}
+
+
+enum Role {
+  USER
+  ADMIN
+}
+
+model User {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email        String   @unique
+  password String   @map("password")
+  fullName     String?  @map("full_name")
+  avatarUrl    String?  @map("avatar_url")
+
+  role         Role     @default(USER)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("users")
+}

@@ -1,21 +1,24 @@
+import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable } from '@nestjs/common';
-import { MailerService } from '@nestjs-modules/mailer';
+import { Queue } from 'bullmq';
 
 @Injectable()
 export class MailService {
-  constructor(private mailerService: MailerService) {}
+  constructor(@InjectQueue('mail') private mailQueue: Queue) {}
 
-  async sendVerificationEmail(email: string, token: string) {
-    const url = `http://localhost:3000/api/v1/auth/verify-email?token=${token}`;
-
-    await this.mailerService.sendMail({
-      to: email,
-      subject: 'Welcome to MailBOX! Confirm your Email',
-      template: './confirmation',
-      context: {
-        name: email,
-        url,
+  async sendUserOtp(user: { email: string; name: string }, otp: string) {
+    await this.mailQueue.add(
+      'send-otp',
+      {
+        email: user.email,
+        name: user.name,
+        otp,
       },
-    });
+      {
+        attempts: 3,
+        backoff: 3000, // Wait 3s before retry
+        removeOnComplete: true,
+      },
+    );
   }
 }

@@ -1,47 +1,43 @@
 import {
   Controller,
   Post,
-  UseGuards,
-  Request,
-  Get,
   Body,
-  Query,
+  HttpCode,
+  HttpStatus,
+  Get,
+  UseGuards,
 } from '@nestjs/common';
+import { AuthService } from './auth.service';
+import { CreateAuthDto } from './dto/create-auth.dto';
+import { LoginDto } from './dto/login.dto';
 import { AuthGuard } from '@nestjs/passport';
-import { AuthService } from './auth.service.js';
-import { RegisterDto } from './dto/register.dto.js';
-import { LoginDto } from './dto/login.dto.js';
+import type { User } from 'src/generated/prisma/client';
+import { GetUser } from './decorators/get-user.decorator';
+import { ResponseMessage } from 'src/common/decorators/response-message.decorator';
 
-@Controller('auth')
+@Controller({
+  path: 'auth',
+  version: '1',
+})
 export class AuthController {
-  constructor(private authService: AuthService) {}
+  constructor(private readonly authService: AuthService) {}
 
   @Post('register')
-  async register(@Body() registerDto: RegisterDto) {
-    return this.authService.register(registerDto);
+  @ResponseMessage('User registered successfully')
+  async register(@Body() createAuthDto: CreateAuthDto) {
+    return this.authService.register(createAuthDto);
   }
 
-  @Get('verify-email')
-  async verifyEmail(@Query('token') token: string) {
-    return this.authService.verifyEmail(token);
-  }
-
-  @Post('resend-verification')
-  async resendVerification(@Body('email') email: string) {
-    return this.authService.resendVerificationEmail(email);
-  }
-
-  @UseGuards(AuthGuard('local'))
+  @HttpCode(HttpStatus.OK)
   @Post('login')
   async login(@Body() loginDto: LoginDto) {
     return this.authService.login(loginDto);
   }
 
+  // Example of a protected route to test the JWT strategy
   @UseGuards(AuthGuard('jwt'))
-  @Get('profile')
-  getProfile(@Request() req: any) {
-    return req.user;
+  @Get('me')
+  getProfile(@GetUser() user: User) {
+    return user;
   }
 }
-
-

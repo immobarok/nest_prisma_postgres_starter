@@ -1,124 +1,106 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  UnauthorizedException,
+  ConflictException,
+  Inject,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { PrismaService } from '../common/context/prisma.service';
+import { CreateAuthDto } from './dto/create-auth.dto';
+import { LoginDto } from './dto/login.dto';
 import * as bcrypt from 'bcrypt';
-import * as crypto from 'crypto';
-import { UsersService } from '../user/user.service.js';
-import { MailService } from '../mail/mail.service.js';
+import { User } from 'src/generated/prisma/client';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
+import { Cache, CACHE_MANAGER } from '@nestjs/cache-manager';
 
 @Injectable()
 export class AuthService {
   constructor(
-    private usersService: UsersService,
+    private prisma: PrismaService,
     private jwtService: JwtService,
-    private mailService: MailService,
+    @InjectQueue('email-queue') private emailQueue: Queue,
+    @Inject(CACHE_MANAGER) private cacheManager: Cache,
   ) {}
 
-  async validateUser(email: string, pass: string): Promise<any> {
-    const user = await this.usersService.findOne(email);
-    if (user && user.password) {
-      const isMatch = await bcrypt.compare(pass, user.password);
+  async register(createAuthDto: CreateAuthDto) {
+    const { email, password, fullName } = createAuthDto;
 
-      if (isMatch) {
-        const { password, ...result } = user;
-        return result;
-      }
-    }
-    return null;
-  }
-  async login(user: any) {
-    const payload = { email: user.email, sub: user.id };
-    return {
-      success: true,
-      message: 'Login successful',
-      data: {
-        user: {
-          id: user.id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          avatar: user.displayImage,
-          isVerified: user.isVerified,
-        },
-        token: this.jwtService.sign(payload),
-        auth: {
-          type: 'Bearer',
-          expiresIn: '1h',
-        },
-      },
-    };
-  }
-
-  async register(userData: any) {
-    // Generate verification token
-    const verificationToken = crypto.randomBytes(32).toString('hex');
-    const verificationExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
-
-    const user = await this.usersService.create({
-      ...userData,
-      emailVerificationToken: verificationToken,
-      emailVerificationExpiry: verificationExpiry,
+    // 1. Check if user already exists
+    const existingUser = await this.prisma.user.findUnique({
+      where: { email },
     });
 
-    // Send verification email
-    await this.mailService.sendVerificationEmail(user.email, verificationToken);
-
-    const { password, emailVerificationToken, ...userWithoutSensitive } = user;
-    return {
-      success: true,
-      message:
-        'Registration successful. Please check your email to verify your account.',
-      user: userWithoutSensitive,
-    };
-  }
-
-  async verifyEmail(token: string) {
-    const user = await this.usersService.findByVerificationToken(token);
-
-    if (!user) {
-      throw new BadRequestException('Invalid verification token');
+    if (existingUser) {
+      throw new ConflictException('User with this email already exists');
     }
 
-    if (
-      user.emailVerificationExpiry &&
-      user.emailVerificationExpiry < new Date()
-    ) {
-      throw new BadRequestException('Verification token has expired');
-    }
+    // 2. Hash the password
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
 
-    await this.usersService.markEmailAsVerified(user.id);
-
-    return {
-      success: true,
-      message: 'Email verified successfully. You can now login.',
-    };
-  }
-
-  async resendVerificationEmail(email: string) {
-    const user = await this.usersService.findOne(email);
-
-    if (!user) {
-      throw new BadRequestException('User not found');
-    }
-
-    if (user.isVerified) {
-      throw new BadRequestException('Email is already verified');
-    }
-
-    // Generate new verification token
-    const verificationToken = crypto.randomBytes(32).toString('hex');
-    const verificationExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
-
-    await this.usersService.updateVerificationToken(
-      user.id,
-      verificationToken,
-      verificationExpiry,
+    await this.cacheManager.set(
+      `auth:registration:${email}`,
+      hashedPassword,
+      60000,
     );
 
-    await this.mailService.sendVerificationEmail(user.email, verificationToken);
+    // 3. Create the user
+    const user = await this.prisma.user.create({
+      data: {
+        email,
+        password: hashedPassword,
+        fullName,
+        role: 'USER',
+        avatarUrl: '',
+      },
+    });
 
+    // 3.1. Send a welcome email
+    await this.emailQueue.add('send-welcome-email', {
+      email: user.email,
+      fullName: user.fullName,
+    });
+
+    // 4. Return token
+    return this.generateToken(user);
+  }
+
+  // ... rest of the file (login, generateToken) remains the same
+  async login(loginDto: LoginDto) {
+    const { email, password } = loginDto;
+
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    const isPasswordValid = await bcrypt.compare(password, `${user.password}`);
+
+    if (!isPasswordValid) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    return this.generateToken(user);
+  }
+
+  private async generateToken(user: User) {
+    const payload = { sub: user.id, email: user.email, role: user.role };
+    const hashedPassword = await this.cacheManager.get(
+      `auth:registration:${user.email}`,
+    );
     return {
-      success: true,
-      message: 'Verification email sent successfully.',
+      access_token: this.jwtService.sign(payload),
+      user: {
+        id: user.id,
+        email: user.email,
+        fullName: user.fullName,
+        role: user.role,
+      },
+      hashedPassword,
     };
   }
 }

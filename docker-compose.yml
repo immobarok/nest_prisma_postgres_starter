@@ -1,30 +1,53 @@
 services:
-  minio:
-    container_name: minio
-    image: minio/minio
-    command: server /data --console-address ":9001"
-    ports:
-      - "9000:9000"
-      - "9001:9001"
+  postgres:
+    image: postgres:17
+    container_name: nest_postgres
+    restart: no
     environment:
-      MINIO_ROOT_USER: admin
-      MINIO_ROOT_PASSWORD: 12345678a
-    volumes:
-      - minio_data:/data
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
-
-  mailhog:
-    container_name: mailhog
-    image: mailhog/mailhog
+      POSTGRES_USER: nest
+      POSTGRES_PASSWORD: nest
+      POSTGRES_DB: nest
     ports:
-      - "1025:1025"
-      - "8025:8025"
+      - '5090:5432'
+    volumes:
+      - nest_postgres:/var/lib/postgresql/data
+    networks:
+      - nest_network
+
+  redis:
+    image: redis:alpine
+    container_name: nest_redis
     restart: unless-stopped
+    ports:
+      - '6389:6379'
+    # ADDED: --requirepass "nest" to the command list
+    command: redis-server --save 60 1 --loglevel warning --maxmemory-policy noeviction --requirepass nest
+    volumes:
+      - nest_redis:/data
+    networks:
+      - nest_network
+
+  bull-board:
+    image: deadly0/bull-board
+    container_name: nest_bull_board
+    ports:
+      - '2020:3000'
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=nest
+      - BULL_VERSION=BULLMQ
+    networks:
+      - nest_network
+    depends_on:
+      - redis
+
+networks:
+  nest_network:
+    driver: bridge
 
 volumes:
-  minio_data:
+  nest_postgres:
+    driver: local
+  nest_redis:
+    driver: local
